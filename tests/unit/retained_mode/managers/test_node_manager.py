@@ -30,6 +30,7 @@ from griptape_nodes.retained_mode.events.parameter_events import (
     AddParameterToNodeResultSuccess,
     AlterParameterDetailsRequest,
 )
+from griptape_nodes.serialization.values import UndecodedValue
 
 
 class TestNodeManagerBatchSetNodeMetadata:
@@ -189,6 +190,7 @@ class TestNodeManagerAddControlParameter:
                 mode_allowed_input=mode_allowed_input,
                 mode_allowed_property=False,
                 mode_allowed_output=mode_allowed_output,
+                serializable=False,
             )
         )
 
@@ -197,6 +199,7 @@ class TestNodeManagerAddControlParameter:
         assert isinstance(parameter, expected_type)
         assert parameter.display_name == display_name
         assert parameter.ui_options["custom_option"] == "kept"
+        assert parameter.serializable is False
 
     @pytest.mark.parametrize(
         ("mode_allowed_input", "mode_allowed_output", "expected_type"),
@@ -288,7 +291,6 @@ class TestNodeManagerResolutionStateSerialization:
             unique_parameter_uuid_to_values={},
             serialized_parameter_value_tracker=MagicMock(),
             create_node_request=create_node_request,
-            workflow_manager=MagicMock(),
         )
 
         # Should return None (no values to serialize) but preserve resolution
@@ -332,7 +334,6 @@ class TestNodeManagerResolutionStateSerialization:
             unique_parameter_uuid_to_values={},
             serialized_parameter_value_tracker=mock_tracker,
             create_node_request=create_node_request,
-            workflow_manager=MagicMock(),
         )
 
         # Resolution should be reset to UNRESOLVED due to serialization failure
@@ -383,14 +384,13 @@ class TestNodeManagerResolutionStateSerialization:
             unique_parameter_uuid_to_values={},
             serialized_parameter_value_tracker=mock_tracker,
             create_node_request=create_node_request,
-            workflow_manager=MagicMock(),
         )
 
         warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert not any("Attempted to serialize" in msg for msg in warning_messages)
         assert create_node_request.resolution == NodeResolutionState.UNRESOLVED.value
 
-    def test_serializable_true_param_with_pickle_failure_still_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_serializable_true_param_with_encode_failure_still_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """Genuine serialization failures (serializable=True) must still emit the warning."""
         from unittest.mock import MagicMock
 
@@ -427,11 +427,10 @@ class TestNodeManagerResolutionStateSerialization:
             unique_parameter_uuid_to_values={},
             serialized_parameter_value_tracker=mock_tracker,
             create_node_request=create_node_request,
-            workflow_manager=MagicMock(),
         )
 
         warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("Attempted to serialize set value for parameter 'test_param'" in msg for msg in warning_messages)
+        assert any("Attempted to save the set value of parameter 'test_param'" in msg for msg in warning_messages)
         assert create_node_request.resolution == NodeResolutionState.UNRESOLVED.value
 
 
@@ -1349,3 +1348,22 @@ class TestNodeCreationFailureDescription:
         )
 
         assert description == "boom"
+
+
+class TestApplyHydratedValues:
+    """Values a worker receives are set on its copy of the node."""
+
+    def test_value_this_process_cannot_rebuild_is_set_and_warned(
+        self, engine: Engine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        node = MagicMock(spec=BaseNode)
+        node.parameter_values = {}
+        undecoded = UndecodedValue({"$type": "other_library.mod:Thing"}, "its library is not loaded here")
+
+        with caplog.at_level(logging.WARNING, logger="griptape_nodes"):
+            failure = engine.node_manager._apply_hydrated_values(node, "Worker Node", {"image": undecoded})
+
+        assert failure is None
+        node.set_parameter_value.assert_called_once_with("image", undecoded)
+        assert "'image'" in caplog.text
+        assert "its library is not loaded here" in caplog.text
