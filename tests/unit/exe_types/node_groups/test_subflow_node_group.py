@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import MagicMock, Mock, create_autospec
 
 import pytest
 
@@ -179,6 +179,19 @@ class TestSubflowNodeGroupProxyParameters:
 
         assert isinstance(proxy, ControlParameterInput)
         assert proxy.tooltip
+
+    @pytest.mark.parametrize("is_incoming", [True, False])
+    @pytest.mark.parametrize("serializable", [True, False])
+    def test_proxy_preserves_original_serializable_setting(
+        self, engine: Engine, *, is_incoming: bool, serializable: bool
+    ) -> None:
+        group = _MiniSubflowGroup(name="serializable_proxy")
+        engine.object_manager.add_object_by_name(group.name, group)
+        original = Parameter(name="value", tooltip="", serializable=serializable)
+
+        proxy = group._create_proxy_parameter_for_connection(original, is_incoming=is_incoming)
+
+        assert proxy.serializable is serializable
 
 
 class TestSubflowNodeGroupProxyLifecycle:
@@ -736,18 +749,6 @@ def _group_with_proxy(engine: Engine, name: str) -> _MiniSubflowGroup:
     group.add_parameter(proxy)
     group.metadata[RIGHT_PARAMETERS_KEY].append(proxy.name)
     return group
-
-    @pytest.mark.parametrize("serializable", [True, False])
-    def test_proxy_saves_its_value_on_the_mirrored_parameters_terms(
-        self, group: _MiniSubflowGroup, mock_handle_request: Mock, *, serializable: bool
-    ) -> None:
-        """A proxy holds the value of the parameter it mirrors, so it must not save what that parameter won't."""
-        group._create_proxy_parameter_for_connection(
-            Parameter(name=self.PROXY_NAME, tooltip="", serializable=serializable), is_incoming=False
-        )
-
-        (request,), _ = mock_handle_request.call_args
-        assert request.serializable is serializable
 
 
 class TestProxySerializable:
